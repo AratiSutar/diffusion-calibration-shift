@@ -155,7 +155,7 @@ This explains the gradient result. Gradient magnitude is a spatial proxy for hig
 
 ## Reproducing
 
-`reproduce_results.ipynb` regenerates every number above from saved posterior samples. It requires no GPU.
+`reproduce_results.ipynb` regenerates every number above from saved posterior samples. It requires no GPU.The notebook reads samples from Kaggle notebook outputs. To run it elsewhere, set BASE4, BASE16 and BASEG in the first cell to directories containing the corresponding sample folders.
 
 ### Data
 
