@@ -6,11 +6,12 @@ Code and results for a master's thesis investigating whether diffusion posterior
 Supervisors: Prof. Dr. Iftikhar Ahmed, Prof. Shan Faiz
 
 ## Repository
-preliminary/reproduce_results.ipynb reproduces the preliminary results
-phase_a/run_sampling.ipynb generates the six-level samples
-phase_a/analyse_levels.ipynb computes the Phase A results
 
-
+| File | What it does |
+|---|---|
+| `preliminary_results.ipynb` | reproduces the preliminary results |
+| `phase_a_sampling.ipynb` | generates the six-level samples |
+| `phase_a_analysis.ipynb` | computes the Phase A results |
 Sample images and model weights are not redistributed. See Reproducing.
 
 ---
