@@ -331,6 +331,146 @@ It also explains why the gradient restriction helps less at level 5 (1.2×) than
 
 ---
 
+## Phase B — prior swap and ground-truth-free detection
+
+Phase A showed calibration degrades with content further from the training distribution. Two questions remained: does the effect come from the **prior**, or simply from some images being harder to reconstruct? And can the failure be **detected without the true image**?
+
+### Repository files
+
+| File | What it does |
+|---|---|
+| `phase_b_prior_swap_sampling.ipynb` | generates ImageNet-prior samples for one level |
+| `phase_b_prior_swap_analysis.ipynb` | FFHQ vs ImageNet comparison, spread/error split, normalisation analysis |
+| `phase_b_gtfree_detection.ipynb` | predicting error from samples alone; held-out R² |
+| `phase_b_gtfree_labels.ipynb` | proper calibration labels, permutation tests, within-category check |
+| `phase_b_heldout_lambda.ipynb` | held-out calibration split for conformal coverage |
+---
+
+### Prior swap
+
+Same images, same forward operator, same sampler settings. Only the learned prior changes, from FFHQ to ImageNet. Comparison is paired per image.
+
+Reconstruction difficulty is identical across the comparison, so it cannot account for any change.
+
+| Content | n | Change in ratio | Improved | Exact sign test |
+|---|---|---|---|---|
+| Faces | 10 | −0.006 | 5 / 10 | p = 1.000 |
+| Animal faces | 10 | +0.069 | 10 / 10 | **p = 0.002** |
+| Landscapes | 10 | +0.101 | 10 / 10 | **p = 0.002** |
+
+Figures are after correcting for the normalisation issue described below. Before correction: faces +0.003 (5/10), animal faces +0.085 (9/10, p = 0.022), landscapes +0.150 (10/10, p = 0.002).
+
+**Faces are the control.** Faces are in distribution for FFHQ. If ImageNet were simply a larger, better model, it would improve faces too. It improves exactly half of them, p = 1.0 — no effect — while improving animal faces and landscapes in all twenty images.
+
+### Spread and error separately
+
+| Content | Spread | Error |
+|---|---|---|
+| Faces | 9.81 → 10.04 (+0.23) | 11.11 → 11.34 (+0.23) |
+| Animal faces | 12.85 → 12.34 (−0.52) | 16.84 → 14.43 (−2.41) |
+| Landscapes | 8.31 → 9.38 (+1.07) | 15.76 → 14.47 (−1.29) |
+
+Three different patterns. On faces, spread and error change by the same amount, so calibration does not change. On animal faces the improvement comes almost entirely from lower error. On landscapes error falls **and** spread rises: the sampler is more accurate and also reports more uncertainty.
+
+### The architecture caveat
+
+The two checkpoints differ in more than training data:
+
+| | FFHQ | ImageNet |
+|---|---|---|
+| Channels | 128 | 256 |
+| Residual blocks | 1 | 2 |
+| Attention resolutions | 16 | 32, 16, 8 |
+| Checkpoint size | 357 MB | 2.2 GB |
+| Time per sample (T4) | ~3.7 min | ~17–28 min |
+
+So training data and model capacity **cannot be fully separated** with these two models. The faces control makes capacity alone an unlikely explanation — it would have to explain why a larger model helps two content types in 20 of 20 images but helps faces only as often as chance. A clean separation needs two checkpoints of identical architecture trained on different data.
+
+---
+
+### A normalisation issue in the sampler's saving code
+
+One landscape was reconstructed ~41 brightness units too bright under **both** priors. Tracing it led to the DPS source.
+
+`sample_condition.py`, lines 117–118, saves both the reconstruction and the ground truth through `normalize_np` in `util/img_utils.py`:
+
+```python
+def normalize_np(img):
+    img -= np.min(img)
+    img /= np.max(img)
+    return img
+```
+
+Each image is stretched to [0, 1] **independently**, using its own darkest and brightest pixel. When a reconstruction's minimum differs from the truth's, the two saved images are related by a linear transform rather than being directly comparable.
+
+| | Fitted relationship | R² |
+|---|---|---|
+| Problem landscape | recon = 1.145 × truth + 24.2 | 0.78 |
+| Typical landscape | recon = 0.969 × truth + 3.1 | — |
+
+The reconstruction has a quarter as many near-black pixels as the truth (37 against 138) and bright pixels where the truth has none — what an independent stretch anchored on a different minimum produces.
+
+**It affects every image**, not only that one: across all compared images the fitted slope has mean 0.949 and standard deviation 0.090.
+
+Ruled out before finding this: the 64×64 measurement (120.2, identical to the truth), the prior (both give +41.6 and +40.6), file errors (all six samples within 6 units), and saturated pixels.
+
+**Correction.** Fitting and removing the transform per image undoes independent normalisation. The problem image moves from ratio 0.237 to 0.545, in line with other landscapes (0.648), so it no longer needs excluding. The prior-swap result strengthens after correction — animal faces move from 9/10 to 10/10.
+
+**Implication for earlier results.** Phase A and the preliminary results were computed on the same normalised outputs. Both priors pass through identical saving code, so paired comparisons remain fair, but absolute ratios carry some normalisation error.
+
+---
+
+### Detecting failure without ground truth
+
+Every calibration metric requires the true image. In deployment there is no true image. Four signals computable from the samples alone were tested: mean spread, concentration of disagreement, edge alignment of disagreement, and its high-frequency fraction.
+
+**Spread predicts error, but not miscalibration.**
+
+| Target | Spread AUC |
+|---|---|
+| High reconstruction error | **0.926** |
+| Miscalibration (per-image coverage) | 0.567 |
+
+Within individual categories, spread correlates with error at 0.43 to 0.95 (median 0.84).
+
+**A hypothesis tested and refuted.** The spatial pattern of disagreement was expected to predict error better than its scalar mean. Under leave-one-out evaluation it adds nothing:
+
+| Model | In-sample R² | Held-out R² |
+|---|---|---|
+| Spread alone | 0.383 | 0.348 |
+| All four signals | 0.435 | 0.352 |
+| Pattern signals only | 0.209 | 0.109 |
+
+**A second claim also withdrawn.** The high-frequency signal appeared to detect miscalibration: AUC 0.748, permutation p = 0.003, surviving Bonferroni correction. It failed a within-category check — mean AUC 0.548 across categories, and the ground-truth image's own frequency content reached 0.670 without using any samples. It detects which **kind** of image it is, not whether that reconstruction is miscalibrated.
+
+---
+
+### Held-out calibration
+
+λ calibrated on five in-distribution faces, evaluated on the five held out:
+
+| | Coverage |
+|---|---|
+| Calibration faces | 0.900 |
+| **Held-out faces** | **0.894** |
+
+Against a 0.900 target. Using all ten faces for calibration changes every reported coverage figure by at most 0.006.
+
+---
+
+### Limitations specific to Phase B
+
+1. **Two priors that also differ in architecture.** Training data and capacity are not fully separable.
+2. **Ten images per category, three categories.** Paintings, portraits and objects were not tested under ImageNet.
+3. **Faces use five samples per image** rather than six; the faces run reached Kaggle's 12-hour limit. Both priors are compared at five. The ratio is unchanged between five and six samples in the convergence check (0.864 at both).
+4. **Per-sample normalisation.** The six samples of each image are also normalised independently, so part of the measured spread is normalisation noise. Removing it fully would require saving raw outputs and re-running.
+5. **Five images for the held-out split** — limited.
+6. **One sampler, one task.**
+
+### How the prior-swap sampling was run
+
+ImageNet sampling runs at 17–28 minutes per sample on a T4, five times slower than FFHQ. Kaggle cancels committed jobs at 12 hours, so the work was split across six commits, each restoring the previous run's samples before generating new ones. `phase_b_prior_swap_sampling.ipynb` is the faces run; the others used the same code with a different level.
+
 ## Reproducing
 
 `Diffusion_model sheet.ipynb` regenerates every number above from saved posterior samples. It requires no GPU.The notebook reads samples from Kaggle notebook outputs. To run it elsewhere, set BASE4, BASE16 and BASEG in the first cell to directories containing the corresponding sample folders.
